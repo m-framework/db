@@ -1,0 +1,25 @@
+<tr>
+    <td width="20%">
+        <a href="~language_prefix~/~pagename~/db/edit/~type~"
+           title="*Edit*"
+           class="edit"><i class="fa fa-pencil"></i></a>
+        <a href="~language_prefix~/~pagename~/db/delete/~type~"
+           title="*Delete*"
+           onclick="return confirm('*Are you sure want to delete this DB connection*? All data will saved.');"
+           class="delete"><i class="fa fa-trash-o"></i></a>
+        <a href="~language_prefix~/~pagename~/db/export/~type~"
+           class="btn-white"
+           onclick="this.parentNode.submit();"
+           title="Export to JSON"><i class="fa fa-download"></i></a>
+        <form action="~language_prefix~/~pagename~/db/import/~type~" method="post" style="display: inline-block;">
+            <input type="file" name="json" id="import-~type~" class="hidden" onchange="this.form.submit();">
+            <label class="btn-white"
+                   for="import-~type~"
+                   title="Import JSON"><i class="fa fa-upload"></i></label>
+        </form>
+    </td>
+    <td width="20%" class="text-left">~type~</td>
+    <td width="20%" class="text-left">~host~</td>
+    <td width="20%" class="text-left">~db_name~</td>
+    <td width="20%" class="text-left">~user~</td>
+</tr>

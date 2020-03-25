@@ -1,0 +1,13 @@
+<form name="db_form" action="" method="post" class="edit-form">
+    <div class="additional-links">
+        <a onclick="return db_form.submit();" title="*Save*"><i class="fa fa-save"></i></a> &nbsp;
+        <a href="~language_prefix~/~pagename~/db/delete/~id~" onclick="return confirm('*Are you sure to delete this article*?');" title="*Delete*"><i class="fa fa-trash"></i></a> &nbsp;
+        <a href="~language_prefix~/~pagename~/db" title="*Databases overview*"><i class="fa fa-database"></i></a>
+    </div>
+    ~errors~
+    ~saved~
+    ~rows~
+    <dl class="edit_row">
+        <dt></dt><dd><button class="btn" type="submit"><i class="fa fa-save" aria-hidden="true"></i> *Save*</button></dd>
+    </dl>
+</form>
