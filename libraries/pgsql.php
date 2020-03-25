@@ -2,12 +2,13 @@
 
 namespace modules\db\libraries;
 
+use m\core;
 use m\custom_exception;
 use m\registry;
 use m\config;
 use m\i18n;
 
-class mysqli extends sql
+class pgsql extends sql
 {
     private
         $db_name,
@@ -40,24 +41,18 @@ class mysqli extends sql
         switch ($name) {
             case 'db':
 
-                if (!($this->db = mysqli_connect(
-                    $this->settings['db_host'],
-                    $this->settings['db_user'],
-                    $this->settings['db_password'],
-                    $this->settings['db_name']
-                ))) {
-                   throw new custom_exception(i18n::get('Can\'t connect to DB') . ' `' . $this->settings['db_name'] .
-                        '` ' . i18n::get('with specified username and password'), 404);
+                if (!($this->db = pg_connect(
+                    "host=" . $this->settings['db_host'] .
+                    " dbname=" . $this->settings['db_name'] .
+                    " user=" . $this->settings['db_user'] .
+                    " password=" . $this->settings['db_password'])))
+                {
+                   throw new custom_exception(i18n::get('Can\'t connect to DB') . ' ' . $this->settings['db_name'] .
+                        ' ' . i18n::get('with specified username and password'), 404);
                 }
 
-                mysqli_query($this->db, 'SET NAMES ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET storage_engine=InnoDB;');
-                mysqli_query($this->db, 'SET character_set_client ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET character_set_connection ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET character_set_database ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET character_set_results ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET character_set_server ' . $this->settings['db_encoding']);
-                mysqli_query($this->db, 'SET NAMES ' . $this->settings['db_encoding']);
+                pg_query($this->db, "SET NAMES '" . $this->settings['db_encoding'] . "';");
+                pg_query($this->db, "SET CLIENT_ENCODING TO '" . $this->settings['db_encoding'] . "';");
 
                 return $this->db;
             default:
@@ -67,14 +62,19 @@ class mysqli extends sql
 
     public function has_result()
     {
-        return !empty($this->result) && $this->result instanceof \mysqli_result;
+        return !empty($this->result);
     }
 
     public function query($sql)
     {
+
+        $sql = str_replace('`', '', $sql);
+        $sql = str_replace('char(', 'chr(', $sql);
+
         $sql_log = htmlspecialchars($sql);
 
         if (config::get('db_logs') && php_sapi_name() !== 'cli') {
+
             $query_time = microtime(true);
             ob_start();
             debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
@@ -82,7 +82,7 @@ class mysqli extends sql
             ob_clean();
         }
 
-        if ($this->result = mysqli_query($this->db, $sql)) {
+        if ($this->result = pg_query($this->db, $sql)) {
             if (config::get('db_logs')) {
                 $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time) * 1000, 3) . 's)';
 
@@ -111,24 +111,24 @@ class mysqli extends sql
 
     public function fetch_assoc($sql)
     {
-        if ($mysqli_query = mysqli_query($this->db, $sql)) {
-            return mysqli_fetch_assoc($mysqli_query);
+        if ($pg_query = pg_query($this->db, $sql)) {
+            return pg_fetch_array($pg_query, null, PGSQL_ASSOC);
         }
         return false;
     }
 
     public function fetch_array($sql)
     {
-        if ($mysqli_query = mysqli_query($this->db, $sql)) {
-            return mysqli_fetch_array($mysqli_query);
+        if ($pg_query = pg_query($this->db, $sql)) {
+            return pg_fetch_array($pg_query, null, PGSQL_NUM);
         }
         return false;
     }
 
     public function fetch_row($sql)
     {
-        if ($mysqli_query = mysqli_query($this->db, $sql)) {
-            $row = mysqli_fetch_row($mysqli_query);
+        if ($pg_query = pg_query($this->db, $sql)) {
+            $row = pg_fetch_array($pg_query, null, PGSQL_NUM);
             if (!empty($row['0'])) {
                 return $row['0'];
             }
@@ -138,29 +138,48 @@ class mysqli extends sql
 
     public function error()
     {
-        return $this->error = mysqli_error($this->db);
+        return $this->error = pg_last_error($this->db);
     }
 
     public function last_id()
     {
-        return mysqli_insert_id($this->db);
+        return $this->fetch_row('SELECT lastval();');
     }
 
     public function found_rows()
     {
-        return $this->fetch_row('SELECT FOUND_ROWS()');
+        return pg_affected_rows($this->result);
     }
 
     public function all_tables()
     {
-        $this->query('SHOW TABLES FROM `' . $this->db_name . '`');
-        return $this->all();
+        $this->query("select table_name from information_schema.tables where table_schema = 'public';");
+
+        $tables = [];
+
+        while($row = pg_fetch_assoc($this->result, NULL)) {
+            if (!empty($row['table_name'])) {
+                $tables[] = $row['table_name'];
+            }
+        }
+
+        return $tables;
     }
 
     public function fields($table)
     {
-        $this->query('SHOW COLUMNS FROM `' . $table . '`');
-        return $this->all();
+        $this->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_NAME = '" . $table . "';");
+
+        $fields = [];
+
+        while($row = pg_fetch_assoc($this->result, NULL)) {
+            if (!empty($row['column_name'])) {
+                $fields[] = $row['column_name'];
+            }
+
+        }
+
+        return $fields;
     }
 
     public function one()
@@ -168,7 +187,7 @@ class mysqli extends sql
         if (!$this->has_result())
             return false;
 
-        $row = mysqli_fetch_row($this->result);
+        $row = pg_fetch_row($this->result);
         $this->result = null;
         return (isset($row['0'])) ? $row['0'] : false;
     }
@@ -183,21 +202,20 @@ class mysqli extends sql
 
         switch($t) {
             case 'assoc':
-                while($row = mysqli_fetch_assoc($this->result)) {
+                while($row = pg_fetch_assoc($this->result, NULL)) {
                     $arr[] = $row;
                     unset($row);
                 }
                 break;
             case 'array':
-                while($row = mysqli_fetch_array($this->result)) {
+                while($row = pg_fetch_array($this->result, NULL)) {
                     $arr[] = $row;
                     unset($row);
                 }
                 break;
             case 'object':
 
-                while ($this->result !== null && $row = mysqli_fetch_object($this->result, $class_name)) {
-
+                while($row = pg_fetch_object($this->result, NULL, $class_name)) {
                     $row->_count = 1;
 
                     $row_vars = get_object_vars($row);
@@ -218,12 +236,14 @@ class mysqli extends sql
 
                     unset($row);
                 }
-                mysqli_free_result($this->result);
+                pg_free_result($this->result);
                 break;
         }
 
+
         $this->_count = $this->found_rows();
         $this->result = null;
+
         return !empty($arr) ? $arr : false;
     }
 
@@ -246,7 +266,7 @@ class mysqli extends sql
         /**
          * Build MODIFY multiple query
          */
-        $q = 'ALTER TABLE `' . $this->_table . '` ' . "\n";
+        $q = 'ALTER TABLE ' . $this->_table . ' ' . "\n";
         $fields = [];
         foreach ($need_alter as $column => $type) {
 
@@ -256,43 +276,40 @@ class mysqli extends sql
 
             switch ($type) {
                 case 'int':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` int(11)';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' int4 DEFAULT NULL'; // "bigserial PRIMARY KEY" : "int4 DEFAULT NULL"
                     break;
                 case 'varchar':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` varchar(255) DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
                     break;
                 case 'tinyint':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` tinyint(1) unsigned DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' int2 DEFAULT NULL';
                     break;
                 case 'timestamp':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` timestamp NULL DEFAULT ' .
-                        ($column == 'date' ? 'CURRENT_TIMESTAMP' : 'NULL');
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' timestamptz(6)' . ($column == 'date' ? " DEFAULT now() NOT NULL" : ' DEFAULT NULL');
                     break;
                 case 'date':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` date DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' date DEFAULT NULL';
                     break;
                 case 'time':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` time DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' time DEFAULT NULL';
                     break;
                 case 'text':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` text DEFAULT NULL';
-                    break;
                 case 'longtext':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` longtext DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' text DEFAULT NULL';
                     break;
                 case 'float':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` float(11,2) DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' float(25) DEFAULT NULL';
                     break;
                 case 'varbinary':
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` varbinary(16) DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' bytea DEFAULT NULL';
                     break;
                 default:
-                    $fields[] = 'MODIFY COLUMN `' . $column . '` varchar(255) DEFAULT NULL';
+                    $fields[] = 'MODIFY COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
             }
         }
 
         /**
-         * For prevent no-sense queries like "ALTER TABLE `articles`;"
+         * For prevent no-sense queries like "ALTER TABLE articles;"
          */
         if (!empty($fields)) {
             $q .= implode(",\n", $fields) . ';';
@@ -313,40 +330,40 @@ class mysqli extends sql
             unset($add_columns[$add_id]);
         }
 
-        $q = 'ALTER TABLE `' . $this->_table . '` ' . "\n";
+        $q = 'ALTER TABLE ' . $this->_table . ' ' . "\n";
         $fields = [];
         foreach ($add_columns as $column => $type) {
             switch ($type) {
                 case 'int':
-                    $fields[] = 'ADD COLUMN `' . $column . '` int(11)';
+                    $fields[] = 'ADD COLUMN ' . $column . ' int4 DEFAULT NULL'; // "bigserial PRIMARY KEY" : "int4 DEFAULT NULL"
                     break;
                 case 'varchar':
-                    $fields[] = 'ADD COLUMN `' . $column . '` varchar(255) DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
                     break;
                 case 'tinyint':
-                    $fields[] = 'ADD COLUMN `' . $column . '` tinyint(1) unsigned DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' int2 DEFAULT NULL';
                     break;
                 case 'timestamp':
-                    $fields[] = 'ADD COLUMN `' . $column . '` timestamp NULL DEFAULT ' .
-                        ($column == 'date' ? 'CURRENT_TIMESTAMP' : 'NULL');
+                    $fields[] = 'ADD COLUMN ' . $column . ' timestamptz(6)' . ($column == 'date' ? " DEFAULT now() NOT NULL" : ' DEFAULT NULL');
                     break;
                 case 'date':
-                    $fields[] = 'ADD COLUMN `' . $column . '` date DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' date DEFAULT NULL';
                     break;
                 case 'time':
-                    $fields[] = 'ADD COLUMN `' . $column . '` time DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' time DEFAULT NULL';
                     break;
                 case 'text':
-                    $fields[] = 'ADD COLUMN `' . $column . '` text DEFAULT NULL';
+                case 'longtext':
+                    $fields[] = 'ADD COLUMN ' . $column . ' text DEFAULT NULL';
                     break;
                 case 'float':
-                    $fields[] = 'ADD COLUMN `' . $column . '` float(11,2) DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' float(25) DEFAULT NULL';
                     break;
                 case 'varbinary':
-                    $fields[] = 'ADD COLUMN `' . $column . '` varbinary(16) DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' bytea DEFAULT NULL';
                     break;
                 default:
-                    $fields[] = 'ADD COLUMN `' . $column . '` varchar(255) DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
             }
         }
 
@@ -368,7 +385,8 @@ class mysqli extends sql
         $keys = [];
         $fields = [];
 
-        $q = "CREATE TABLE IF NOT EXISTS `" . $this->_table . "` (\n";
+        // "public".
+        $q = "CREATE TABLE IF NOT EXISTS " . $this->_table . " (\n";
 
         $n = 1;
         foreach ($this->fields as $field => $type) {
@@ -378,58 +396,54 @@ class mysqli extends sql
             if (gettype($type) == 'string') {
                 switch ($type) {
                     case 'int':
-                        $q .= "  `" . $field . "` int(11) unsigned ";
+                        $q .= $field;
+
                         if ($n == 1) {
-                            $primary = $field;
-                            $q .= "NOT NULL";
+                            $q .= " bigserial";
                             if ($field == 'id' || in_array($this->_table, ['users'])) {
-                                $q .= " AUTO_INCREMENT";
+                                $q .= " PRIMARY KEY";
                             }
+                            $keys[] = $field;
                         } else {
-                            $q .= "DEFAULT NULL";
+                            $q .= " int4 DEFAULT NULL";
                         }
                         $q .= ",\n";
-                        $keys[] = $field;
                         break;
                     case 'varchar':
-                        $q .= "  `" . $field . "` varchar(255) ";
+                        $q .= "  " . $field . " varchar(255) ";
                         if ($n == 1) {
                             $q .= "NOT NULL";
+                            $keys[] = $field;
                         } else {
                             $q .= "DEFAULT NULL";
                         }
                         $q .= ",\n";
-                        if ($field == 'alias') {
-                            $keys[] = $field;
-                        }
                         break;
                     case 'tinyint':
-                        $q .= "  `" . $field . "` tinyint(1) unsigned DEFAULT NULL,\n";
+                        $q .= "  " . $field . " int2 DEFAULT NULL,\n";
                         break;
                     case 'timestamp':
-                        $q .= "  `" . $field . "` timestamp NULL DEFAULT " .
-                            ($field == 'date' ? "CURRENT_TIMESTAMP" : "NULL") . ",\n";
+                        $q .= "  " . $field . " timestamptz(6) " .
+                            ($field == 'date' ? " DEFAULT now() NOT NULL" : ' DEFAULT NULL') . ",\n";
                         break;
                     case 'date':
-                        $q .= "  `" . $field . "` date DEFAULT NULL,\n";
+                        $q .= "  " . $field . " date DEFAULT NULL,\n";
                         break;
                     case 'time':
-                        $q .= "  `" . $field . "` time DEFAULT NULL,\n";
+                        $q .= "  " . $field . " time DEFAULT NULL,\n";
                         break;
                     case 'text':
-                        $q .= "  `" . $field . "` text DEFAULT NULL,\n";
-                        break;
                     case 'longtext':
-                        $q .= "  `" . $field . "` longtext DEFAULT NULL,\n";
+                        $q .= "  " . $field . " text DEFAULT NULL,\n";
                         break;
                     case 'float':
-                        $q .= "  `" . $field . "` float(11,2) DEFAULT NULL,\n";
+                        $q .= "  " . $field . " float(25) DEFAULT NULL,\n";
                         break;
                     case 'varbinary':
-                        $q .= "  `" . $field . "` varbinary(16) DEFAULT NULL,\n";
+                        $q .= "  " . $field . " bytea DEFAULT NULL,\n";
                         break;
                     default:
-                        $q .= "  `" . $field . "` varchar(255) DEFAULT NULL,\n";
+                        $q .= "  " . $field . " varchar(255) DEFAULT NULL,\n";
                 }
                 $n++;
             }
@@ -437,32 +451,22 @@ class mysqli extends sql
                 switch ($type['type']) {
                     case 'enum':
                         if (!empty($type['values'])) {
-                            $q .= "  `" . $field . "` enum('" . implode("','", $type['values']) . "') DEFAULT '" . reset($type['values']) . "',\n";
+                            $enum_q = "CREATE TYPE  " . $field . " enum('" . implode("','", $type['values']) . "');\n";
+
+                            $q .= "  " . $field . " $field,\n";
                         }
                         break;
                 }
             }
         }
 
-        if (empty($primary) && !empty($fields['0'])) {
-            $primary = $fields['0'];
-            $q = str_replace("`" . $field . "` varchar(255) DEFAULT NULL", "`" . $field . "` varchar(255) NOT NULL", $q);
+        $q .= "  PRIMARY KEY (" . implode(', ', $keys) . ")\n";
+        $q .= ")\n";
+        $q .= "WITH (OIDS=FALSE)\n\n;\n";
+
+        if (!empty($enum_q)) {
+            $this->query($enum_q);
         }
-
-        $q .= "  PRIMARY KEY (`" . $primary . "`)";
-
-        if (!empty($keys)) {
-
-            $q .= ",\n";
-
-            if (count($keys) > 16) {
-                $keys = array_slice($keys, 0, 16);
-            }
-
-            $q .= "  KEY `" . $this->_table . "` (`" . implode('`,`', $keys) . "`)\n";
-        }
-
-        $q .= ") ENGINE=InnoDB DEFAULT CHARSET=" . (!empty($this->db_character) ? $this->db_character : 'utf8') . ";";
 
         $this->query($q);
 
@@ -474,6 +478,6 @@ class mysqli extends sql
         if (empty($this->db))
             return false;
 
-        return mysqli_close($this->db);
+        return pg_close($this->db);
     }
 }

@@ -1,7 +1,7 @@
 {
   "title":"Databases",
   "name":"db",
-  "description":"Module for usage DB in project. Available several most popular types of databases: MySQLi, PostgreSQL, MongoDB, SQLite3, Oracle OCI8, Firebird.",
+  "description":"Module for usage DB in project. Available several most popular types of databases: MySQLi, PostgreSQL, MongoDB",
   "icon":"<i class=\"fa fa-database\"></i>",
   "version":"1.0",
   "date":"2018-08-28",
@@ -11,7 +11,7 @@
     "":"<i class=\"fa fa-database\"></i> *Databases overview*",
     "/add":"<i class=\"fa fa-plus\"></i> *Add database*"
   },
-  "tags":["db","database","mysqli","mongo","postgres"],
+  "tags":["db","database","mysql","mysqli","mongo","mongodb","postgres"],
   "price":"0",
   "requires":[]
 }

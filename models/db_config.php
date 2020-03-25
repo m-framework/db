@@ -20,7 +20,7 @@ class db_config extends model
 
     public static $types = [
         'mysqli' => 'MySQLi',
-//        'pgsql' => 'PostgreSQL',
+        'pgsql' => 'PostgreSQL',
 //        'sqlite' => 'SQLite',
 //        'sqlite3' => 'SQLite3',
         'mongodb' => 'MongoDB',
