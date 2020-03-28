@@ -26,6 +26,19 @@ class pgsql extends sql
         $fields,
         $join_type = 'INNER';
 
+    private static $field_types = [
+        'bigint' => 'int',
+        'integer' => 'int',
+        'character varying' => 'varchar',
+        'timestamp with time zone' => 'timestamp',
+        'timestamp' => 'timestamp',
+        'text' => 'text',
+        'date' => 'date',
+        'float' => 'float',
+        'bytea' => 'varbinary',
+        'smallint' => 'tinyint',
+    ];
+
     function __construct(array $db_init)
     {
         $this->db_name = $db_init['db_name'];
@@ -69,7 +82,7 @@ class pgsql extends sql
     {
 
         $sql = str_replace('`', '', $sql);
-        $sql = str_replace('char(', 'chr(', $sql);
+//        $sql = str_replace(' char(', ' chr(', $sql);
 
         $sql_log = htmlspecialchars($sql);
 
@@ -81,7 +94,7 @@ class pgsql extends sql
             $debug_backtrace = ob_get_contents();
             ob_clean();
         }
-
+//print($sql . "<br>\n");
         if ($this->result = pg_query($this->db, $sql)) {
             if (config::get('db_logs')) {
                 $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time) * 1000, 3) . 's)';
@@ -148,7 +161,12 @@ class pgsql extends sql
 
     public function found_rows()
     {
-        return pg_affected_rows($this->result);
+        return empty($this->result) ? [] : pg_affected_rows($this->result);
+    }
+
+    public function num_rows()
+    {
+        return empty($this->result) ? 0 : pg_num_rows($this->result);
     }
 
     public function all_tables()
@@ -168,13 +186,16 @@ class pgsql extends sql
 
     public function fields($table)
     {
-        $this->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_NAME = '" . $table . "';");
+        $this->query("SELECT column_name,data_type FROM information_schema.COLUMNS WHERE TABLE_NAME = '" . $table . "';");
 
         $fields = [];
 
         while($row = pg_fetch_assoc($this->result, NULL)) {
             if (!empty($row['column_name'])) {
-                $fields[] = $row['column_name'];
+                $fields[] = [
+                    'Type' => empty(static::$field_types[$row['data_type']]) ? $row['data_type'] : static::$field_types[$row['data_type']],
+                    'Field' => $row['column_name'],
+                ];
             }
 
         }
@@ -236,12 +257,12 @@ class pgsql extends sql
 
                     unset($row);
                 }
-                pg_free_result($this->result);
                 break;
         }
 
 
         $this->_count = $this->found_rows();
+        pg_free_result($this->result);
         $this->result = null;
 
         return !empty($arr) ? $arr : false;
@@ -252,7 +273,14 @@ class pgsql extends sql
         if (empty($this->fields) || empty($fields) || !is_array($this->fields) || empty($this->_table))
             return false;
 
+        $_fields = $fields;
+
         $need_alter = array_diff_assoc($this->fields, $fields);
+
+//        if (!empty($need_alter)) {
+//            core::out($need_alter);
+//        }
+
         /**
          * In version 1.0 we add new fields in table.
          * No deletion of data from DB by changing a table structure !
@@ -274,37 +302,70 @@ class pgsql extends sql
                 continue;
             }
 
+            if (in_array($column, ['group'])) {
+                $column = '"' . $column . '"';
+            }
+
+            if (!empty($this->fields[$column]) && $this->fields[$column] == 'longtext' && $_fields[$column] == 'text') {
+                continue;
+            }
+
             switch ($type) {
                 case 'int':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' int4 DEFAULT NULL'; // "bigserial PRIMARY KEY" : "int4 DEFAULT NULL"
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE integer';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'varchar':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE varchar(255)';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'tinyint':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' int2 DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE smallint';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'timestamp':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' timestamptz(6)' . ($column == 'date' ? " DEFAULT now() NOT NULL" : ' DEFAULT NULL');
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE timestamptz(6)';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    if ($column == 'date') {
+                        $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT now() NOT NULL';
+                    }
+                    else {
+                        $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
+                    }
                     break;
                 case 'date':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' date DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE date';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'time':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' time DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE time';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'text':
                 case 'longtext':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' text DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE text';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'float':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' float(25) DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE float(25)';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 case 'varbinary':
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' bytea DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE bytea';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
                     break;
                 default:
-                    $fields[] = 'MODIFY COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' TYPE varchar(255)';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' DROP DEFAULT';
+                    $fields[] = '  ALTER COLUMN ' . $column . ' SET DEFAULT NULL';
             }
         }
 
@@ -333,15 +394,20 @@ class pgsql extends sql
         $q = 'ALTER TABLE ' . $this->_table . ' ' . "\n";
         $fields = [];
         foreach ($add_columns as $column => $type) {
+
+            if (in_array($column, ['group'])) {
+                $column = '"' . $column . '"';
+            }
+
             switch ($type) {
                 case 'int':
-                    $fields[] = 'ADD COLUMN ' . $column . ' int4 DEFAULT NULL'; // "bigserial PRIMARY KEY" : "int4 DEFAULT NULL"
+                    $fields[] = 'ADD COLUMN ' . $column . ' integer DEFAULT NULL';
                     break;
                 case 'varchar':
                     $fields[] = 'ADD COLUMN ' . $column . ' varchar(255) DEFAULT NULL';
                     break;
                 case 'tinyint':
-                    $fields[] = 'ADD COLUMN ' . $column . ' int2 DEFAULT NULL';
+                    $fields[] = 'ADD COLUMN ' . $column . ' smallint DEFAULT NULL';
                     break;
                 case 'timestamp':
                     $fields[] = 'ADD COLUMN ' . $column . ' timestamptz(6)' . ($column == 'date' ? " DEFAULT now() NOT NULL" : ' DEFAULT NULL');
@@ -391,6 +457,10 @@ class pgsql extends sql
         $n = 1;
         foreach ($this->fields as $field => $type) {
 
+            if (in_array($field, ['group'])) {
+                $field = '"' . $field . '"';
+            }
+
             $fields[] = $field;
 
             if (gettype($type) == 'string') {
@@ -401,11 +471,11 @@ class pgsql extends sql
                         if ($n == 1) {
                             $q .= " bigserial";
                             if ($field == 'id' || in_array($this->_table, ['users'])) {
-                                $q .= " PRIMARY KEY";
+                                //$q .= " PRIMARY KEY";
                             }
                             $keys[] = $field;
                         } else {
-                            $q .= " int4 DEFAULT NULL";
+                            $q .= " integer DEFAULT NULL";
                         }
                         $q .= ",\n";
                         break;
@@ -420,7 +490,7 @@ class pgsql extends sql
                         $q .= ",\n";
                         break;
                     case 'tinyint':
-                        $q .= "  " . $field . " int2 DEFAULT NULL,\n";
+                        $q .= "  " . $field . " smallint DEFAULT NULL,\n";
                         break;
                     case 'timestamp':
                         $q .= "  " . $field . " timestamptz(6) " .
