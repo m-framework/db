@@ -82,44 +82,19 @@ class mongodb
 
     public function command(\MongoDB\Driver\Command $command)
     {
-        if (config::get('db_logs') && php_sapi_name() !== 'cli') {
-
+        if (config::get('db_logs')) { //  && php_sapi_name() !== 'cli'
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
-
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
             $command_log = registry::get('mongo_query');
         }
 
-        if ($this->result = $this->db->executeCommand($this->db_name, $command)) {
+        $this->result = $this->db->executeCommand($this->db_name, $command);
 
-            if (config::get('db_logs')) {
-
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time), 5) . 's)';
-
-                if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                    registry::append('db_logs', $command_log);
-                }
-                else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                    registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-                }
-            }
-
-            return $this;
-        }
-        else if (config::get('db_logs')&& !empty($command_log)) {
-            if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                registry::append('db_logs', $command_log);
-            }
-            else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time) * 1000, 3) . 'ms)';
-                registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-            }
+        if (isset($query_time) && isset($command_log) && isset($debug_backtrace)) {
+            $this->set_db_logs($query_time, $command_log, $debug_backtrace);
         }
 
-        return false;
+        return empty($this->result) ? false : $this;
     }
 
     public function error()
@@ -379,63 +354,31 @@ class mongodb
 //        $query = new \MongoDB\Driver\Query([]);
 //        $this->query($query);
 
-        if (config::get('db_logs') && php_sapi_name() !== 'cli') { //
+        if (config::get('db_logs')) { //  && php_sapi_name() !== 'cli'
             $tmp_debug_arr = ['w' => $w, 'c' => $c, 'o' => $o, 'l' => $l];
         }
 
         $pipeline = [];
 
-        // Specific fields
-        if (!empty($w) && $w !== ['*'] && count($w) > 0) {
-            if (array_values($w) === $w) {
-                foreach ($w as $k => $_w) {
-                    $w[$_w] = 1;
-                    unset($w[$k]);
-                }
-            }
-            $pipeline[] = ['$project' => $w];
-        }
-
-        // Sorting
         /**
-         *   TODO:  In pipeline can be several {$sort: ... }  objects
-         *
+         * Join other collections
          */
-        if (!empty($o) && $o !== ['id' => 'ASC'] && $o !== [$this->__id => 'ASC']) {
+        if (!empty($j)) {
 
-            foreach ($o as $field => $sort) {
-                // Can be several sorting fields
-                if (is_int($field) && is_array($sort)) {
-                    foreach ($sort as $inner_field => $inner_sort) {
-                        if (!empty($inner_field) && mb_strtolower($inner_sort, 'UTF-8') === 'desc') {
-//                            $sort[$inner_field] = -1;
-                            $pipeline[] = ['$sort' => [$inner_field => -1]];
-                        }
-                        else if (!empty($inner_field) && mb_strtolower($inner_sort, 'UTF-8') === 'asc') {
-//                            $sort[$inner_field] = 1;
-                            $pipeline[] = ['$sort' => [$inner_field => 1]];
-                        }
-                    }
-                }
-                else if (!empty($field) && is_string($sort) && mb_strtolower($sort, 'UTF-8') === 'desc') {
-//                    $o[$field] = -1;
-                    $pipeline[] = ['$sort' => [$field => -1]];
-                }
-                else if (!empty($field) && is_string($sort) &&  mb_strtolower($sort, 'UTF-8') === 'asc') {
-//                    $o[$field] = 1;
-                    $pipeline[] = ['$sort' => [$field => 1]];
-                }
-//                else {
-//                    unset($o[$field]);
-//                }
+            foreach ($j as $collection => $join_rule) {
+                $keys = array_keys($join_rule);
+                $values = array_values($join_rule);
+                $as_collection = empty($join_rule['as']) ? $collection : $join_rule['as'];
+
+                $pipeline[] = ['$lookup' => ['from' => $collection, 'localField' => $values['0'], 'foreignField' => $keys['0'], 'as' => $as_collection]];
+
+                $pipeline[] = ['$unwind' => '$' . $as_collection];
             }
-
-//            if (!empty($o)) {
-//                $pipeline[] = ['$sort' => $o];
-//            }
         }
 
-        // Conditions
+        /**
+         * Conditions
+         */
         if (!empty($c)) {
             $c = $this->prepare_conditions($c);
 
@@ -444,7 +387,83 @@ class mongodb
             }
         }
 
-        // Limit and Skip (pagination)
+        /**
+         * Specific fields
+         */
+        if (!empty($w) && is_array($w) && $w !== ['*'] && count($w) > 0) {
+            if (array_values($w) === $w) {
+                foreach ($w as $k => $_w) {
+                    $w[$_w] = 1;
+                    unset($w[$k]);
+                }
+                $pipeline[] = ['$project' => $w];
+            }
+        }
+
+
+        /**
+         * Grouping and returning a fields, typed in $w array
+         */
+        if (!empty($g) && is_array($g)) {
+            $group = ['_id' => []];
+            foreach ($g as $group_field) {
+                $group['_id'][$group_field] = '$' . $group_field;
+            }
+
+            if (!empty($w) && is_array($w) && $w !== ['*'] && count($w) > 0) {
+                foreach (array_keys($w) as $w_k) {
+
+                    if ($w_k == '_id') {
+                        continue;
+                    }
+
+                    $group[$w_k] = ['$first' => '$' . $w_k];
+                }
+            }
+
+            $pipeline[] = ['$group' => $group];
+        }
+
+
+        /**
+         * Sorting
+         */
+        if (!empty($o) && $o !== ['id' => 'ASC'] && $o !== [$this->__id => 'ASC']) {
+
+            $_sort = [];
+
+            foreach ($o as $field => $sort) {
+                // Can be several sorting fields
+                if (is_int($field) && is_array($sort)) {
+                    foreach ($sort as $inner_field => $inner_sort) {
+                        if (!empty($inner_field) && mb_strtolower($inner_sort, 'UTF-8') === 'desc') {
+//                            $pipeline[] = ['$sort' => [$inner_field => -1]];
+                            $_sort[$inner_field] = -1;
+                        }
+                        else if (!empty($inner_field) && mb_strtolower($inner_sort, 'UTF-8') === 'asc') {
+//                            $pipeline[] = ['$sort' => [$inner_field => 1]];
+                            $_sort[$inner_field] = 1;
+                        }
+                    }
+                }
+                else if (!empty($field) && is_string($sort) && mb_strtolower($sort, 'UTF-8') === 'desc') {
+//                    $pipeline[] = ['$sort' => [$field => -1]];
+                    $_sort[$field] = -1;
+                }
+                else if (!empty($field) && is_string($sort) &&  mb_strtolower($sort, 'UTF-8') === 'asc') {
+//                    $pipeline[] = ['$sort' => [$field => 1]];
+                    $_sort[$field] = 1;
+                }
+            }
+
+            if (!empty($_sort)) {
+                $pipeline[] = ['$sort' => $_sort];
+            }
+        }
+
+        /**
+         * Limit and Skip (pagination)
+         */
         if (!empty($l)) {
             if (count($l) == 1 && !empty($l['0'])) {
                 $pipeline[] = ['$limit' => (int)$l['0']];
@@ -457,19 +476,21 @@ class mongodb
 
 
 
-        // TODO: grouping, like on MySQL with multiple results   ($group)
-
-        // TODO: join other collection   ($unwind)
 
 
-
-
-
-        if (config::get('db_logs') && php_sapi_name() !== 'cli') { //
+        if (config::get('db_logs')) { //  && php_sapi_name() !== 'cli'
 
             $json_pipeline = json_encode(empty($pipeline) ? [] : $pipeline, JSON_UNESCAPED_UNICODE|JSON_NUMERIC_CHECK);
 
             $json_pipeline = preg_replace('!{\"\$oid\":\"([a-z0-9]{24})\"}!si', 'ObjectId("$1")', $json_pipeline);
+
+            preg_match_all('!\{\"\$date\"\:\{\"\$numberLong\"\:([0-9]{10,14})\}\}!si', $json_pipeline, $dates_match);
+
+            if (!empty($dates_match['1'])) {
+                foreach ($dates_match['1'] as $dm => $microseconds) {
+                    $json_pipeline = str_replace($dates_match['0'][$dm], 'ISODate("' . date('Y-m-d H:i:s', round($microseconds/1000)) . '")', $json_pipeline);
+                }
+            }
 
             $mongo_query = 'db.' . $this->_table . '.aggregate(';
             $mongo_query .= $json_pipeline;
@@ -511,17 +532,10 @@ class mongodb
     {
         $condition = $this->prepare_conditions($c);
 
-        if (config::get('db_logs')) {
-
-            $command_log = 'db.' . $this->_table . '.count(';
-            $command_log .= json_encode(empty($condition) ? [] : $condition, JSON_UNESCAPED_UNICODE|JSON_NUMERIC_CHECK);
-            $command_log .= ');';
-
+        if (config::get('db_logs')) { //  && php_sapi_name() !== 'cli'
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
+            $command_log = registry::get('mongo_query');
         }
 
         $Result = $this->db->executeCommand(
@@ -532,16 +546,8 @@ class mongodb
             ])
         );
 
-        if (config::get('db_logs')) {
-
-            $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time), 5) . 's)';
-
-            if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                registry::append('db_logs', $command_log);
-            }
-            else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-            }
+        if (isset($query_time) && isset($command_log) && isset($debug_backtrace)) {
+            $this->set_db_logs($query_time, $command_log, $debug_backtrace);
         }
 
         return (int)current($Result->toArray())->n;
@@ -699,17 +705,10 @@ class mongodb
             $in['_id'] = new \MongoDB\BSON\ObjectId($in['_id']);
         }
 
-        if (config::get('db_logs')) {
-
-            $command_log = 'db.' . $this->_table . '.insert(';
-            $command_log .= json_encode($in, JSON_UNESCAPED_UNICODE|JSON_NUMERIC_CHECK);
-            $command_log .= ');';
-
+        if (config::get('db_logs')) { //  && php_sapi_name() !== 'cli'
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
+            $command_log = registry::get('mongo_query');
         }
 
         $this->last_id = $in['_id'];
@@ -720,17 +719,8 @@ class mongodb
             $this->db->executeBulkWrite($this->db_name . '.' . $this->_table, $bulk);
             $this->_count = $bulk->count();
 
-
-            if (config::get('db_logs')) {
-
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time), 5) . 's)';
-
-                if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                    registry::append('db_logs', $command_log);
-                }
-                else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                    registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-                }
+            if (isset($query_time) && isset($command_log) && isset($debug_backtrace)) {
+                $this->set_db_logs($query_time, $command_log, $debug_backtrace);
             }
 
         } catch (\MongoDB\Driver\Exception\BulkWriteException $e) {
@@ -784,10 +774,7 @@ class mongodb
             $command_log .= '});';
 
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
         }
 
 
@@ -799,16 +786,8 @@ class mongodb
 
             $this->_count = $bulk->count();
 
-            if (config::get('db_logs')) {
-
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time), 5) . 's)';
-
-                if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                    registry::append('db_logs', $command_log);
-                }
-                else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                    registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-                }
+            if (isset($query_time) && isset($command_log) && isset($debug_backtrace)) {
+                $this->set_db_logs($query_time, $command_log, $debug_backtrace);
             }
 
         } catch (\MongoDB\Driver\Exception\BulkWriteException $e) {
@@ -838,10 +817,7 @@ class mongodb
             $command_log .= ');';
 
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
         }
 
         if (empty($c)) {
@@ -854,16 +830,8 @@ class mongodb
             $this->db->executeBulkWrite($this->db_name . '.' . $this->_table, $bulk);
             $this->_count = $bulk->count();
 
-            if (config::get('db_logs')) {
-
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time), 5) . 's)';
-
-                if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($command_log)) {
-                    registry::append('db_logs', $command_log);
-                }
-                else if (!empty($debug_backtrace) && !empty($query_time) && !empty($command_log)) {
-                    registry::append('db_logs', '<b>' . $command_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-                }
+            if (isset($query_time) && isset($command_log) && isset($debug_backtrace)) {
+                $this->set_db_logs($query_time, $command_log, $debug_backtrace);
             }
 
         } catch (\MongoDB\Driver\Exception\BulkWriteException $e) {
@@ -1147,5 +1115,39 @@ class mongodb
     public function get_result()
     {
         return $this->result;
+    }
+
+    private function set_db_logs($query_time, $command_string, $debug_backtrace = null)
+    {
+        $query_time = empty($query_time) ? '' : round(microtime(true) - $query_time, 5);
+
+        $command_string = trim($command_string);
+
+        $log_record = $command_string;
+
+        if (true) { // !registry::get('is_ajax') && php_sapi_name() !== 'cli'
+            $log_record = [
+                'query' => $command_string,
+                'time' => $query_time,
+            ];
+
+            if (!empty($debug_backtrace)) {
+                $log_record['backtrace'] = $debug_backtrace;
+            }
+        }
+
+        if (config::get('db_logs') && !empty($log_record)) {
+            registry::push('db_logs', $log_record);
+        }
+    }
+
+    private function prepare_backtrace(array $backtrace_arr = [])
+    {
+        $backtrace_arr = array_splice($backtrace_arr, 0, -4);
+        $backtrace = [];
+        foreach ($backtrace_arr as $row) {
+            $backtrace[] = $row['file'] . ':' . $row['line'];
+        }
+        return $backtrace;
     }
 }

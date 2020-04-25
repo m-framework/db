@@ -748,4 +748,38 @@ abstract class sql
         return empty($ids) ? false :
             $this->delete(["`".$this->__id."` IN (".implode(',', (array)$ids).")"], [count($ids)]);
     }
+
+    protected function set_db_logs($query_time, $command_string, $debug_backtrace = null)
+    {
+        $query_time = empty($query_time) ? '' : round(microtime(true) - $query_time, 5);
+
+        $command_string = trim($command_string);
+
+        $log_record = $command_string;
+
+        if (php_sapi_name() !== 'cli') { // !registry::get('is_ajax') &&
+            $log_record = [
+                'query' => $command_string,
+                'time' => $query_time,
+            ];
+
+            if (!empty($debug_backtrace)) {
+                $log_record['backtrace'] = $debug_backtrace;
+            }
+        }
+
+        if (config::get('db_logs') && !empty($log_record)) {
+            registry::push('db_logs', $log_record);
+        }
+    }
+
+    protected function prepare_backtrace(array $backtrace_arr = [])
+    {
+        $backtrace_arr = array_splice($backtrace_arr, 0, -4);
+        $backtrace = [];
+        foreach ($backtrace_arr as $row) {
+            $backtrace[] = $row['file'] . ':' . $row['line'];
+        }
+        return $backtrace;
+    }
 }

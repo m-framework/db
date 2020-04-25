@@ -76,37 +76,16 @@ class mysqli extends sql
 
         if (config::get('db_logs') && php_sapi_name() !== 'cli') {
             $query_time = microtime(true);
-            ob_start();
-            debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            $debug_backtrace = ob_get_contents();
-            ob_clean();
+            $debug_backtrace = $this->prepare_backtrace(debug_backtrace(false));
         }
 
-        if ($this->result = mysqli_query($this->db, $sql)) {
-            if (config::get('db_logs')) {
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time) * 1000, 3) . 's)';
+        $this->result = mysqli_query($this->db, $sql);
 
-                if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($sql_log)) {
-                    registry::append('db_logs', $sql_log);
-                }
-                else if (!empty($debug_backtrace) && !empty($query_time) && !empty($sql_log)) {
-                    registry::append('db_logs', '<b>' . $sql_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-                }
-            }
-
-            return $this;
-        }
-        else if (config::get('db_logs')&& !empty($sql_log)) {
-            if ((registry::get('is_ajax') || php_sapi_name() == 'cli') && !empty($sql_log)) {
-                registry::append('db_logs', $sql_log);
-            }
-            else if (!empty($debug_backtrace) && !empty($query_time) && !empty($sql_log)) {
-                $query_time = empty($query_time) ? '' : ' (' . round((microtime(true) - $query_time) * 1000, 3) . 's)';
-                registry::append('db_logs', '<b>' . $sql_log . '</b> ' . $query_time . "\n" . $debug_backtrace);
-            }
+        if (isset($query_time) && isset($sql_log) && isset($debug_backtrace)) {
+            $this->set_db_logs($query_time, $sql_log, $debug_backtrace);
         }
 
-        return false;
+        return empty($this->result) ? false : $this;
     }
 
     public function fetch_assoc($sql)
